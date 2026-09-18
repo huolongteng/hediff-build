@@ -98,9 +98,9 @@ def run_helayers(root: Path, dataset: str) -> None:
         files: list[str]
         if dataset in {"digits", "mnist"}:
             sys.path.insert(0, str(root))
-            from plain_models_tf import CryptoNet_DIGITS_tf, CryptoNet_MNIST_tf
+            from plain_models_tf import CryptoNet_DIGITS_tf_poly, CryptoNet_MNIST_tf
 
-            model = CryptoNet_DIGITS_tf() if dataset == "digits" else CryptoNet_MNIST_tf()
+            model = CryptoNet_DIGITS_tf_poly() if dataset == "digits" else CryptoNet_MNIST_tf()
             shape = (1, 8, 8, 1) if dataset == "digits" else (1, 28, 28, 1)
             sample = rng.random(shape, dtype=np.float32)
             model(sample)

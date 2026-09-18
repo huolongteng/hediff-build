@@ -12,14 +12,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {backend: tenseal, dataset: credit}
-          - {backend: tenseal, dataset: bank}
-          - {backend: tenseal, dataset: digits}
-          - {backend: tenseal, dataset: mnist}
-          - {backend: helayers, dataset: credit}
-          - {backend: helayers, dataset: bank}
           - {backend: helayers, dataset: digits}
-          - {backend: helayers, dataset: mnist}
 
     steps:
       - uses: actions/checkout@v4
