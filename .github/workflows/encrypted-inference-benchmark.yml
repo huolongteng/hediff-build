@@ -1,0 +1,44 @@
+name: Encrypted inference benchmark
+
+on:
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    name: ${{ matrix.backend }} / ${{ matrix.dataset }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [tenseal, concrete, helayers]
+        dataset: [credit, bank, digits, mnist]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Clone the upstream artifact
+        run: |
+          git clone --filter=blob:none https://github.com/Yiteng-Peng/HEDiff.git upstream
+          git -C upstream checkout ffeed7f131d4b55698a08798927777b44f508099
+
+      - name: Install the selected backend
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --only-binary=:all: -r requirements/${{ matrix.backend }}.txt
+
+      - name: Benchmark encrypted inference
+        env:
+          OMP_NUM_THREADS: "2"
+          MKL_NUM_THREADS: "2"
+          TF_NUM_INTRAOP_THREADS: "2"
+          TF_NUM_INTEROP_THREADS: "2"
+        run: |
+          python real_model_smoke.py \
+            ${{ matrix.backend }} \
+            ${{ matrix.dataset }} \
+            --source-root upstream \
+            --repeats 3

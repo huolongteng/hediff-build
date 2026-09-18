@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import statistics
 import sys
 import tempfile
 import time
@@ -32,7 +34,16 @@ def torch_model(root: Path, dataset: str):
     return model_cls().eval(), np.random.default_rng(42).random(shape, dtype=np.float32)
 
 
-def run_tenseal(root: Path, dataset: str) -> None:
+def summarize(setup_seconds: float, samples: list[float]) -> dict[str, object]:
+    return {
+        "setup_seconds": setup_seconds,
+        "inference_seconds": samples,
+        "inference_mean_seconds": statistics.mean(samples),
+        "inference_median_seconds": statistics.median(samples),
+    }
+
+
+def run_tenseal(root: Path, dataset: str, repeats: int) -> dict[str, object]:
     import tenseal as ts
 
     sys.path.insert(0, str(root))
@@ -46,6 +57,7 @@ def run_tenseal(root: Path, dataset: str) -> None:
     )
 
     model, calibration = torch_model(root, dataset)
+    setup_started = time.monotonic()
     bits = 26
     degree = 2**14 if dataset in {"digits", "mnist"} else 2**13
     middle = 8 if dataset in {"digits", "mnist"} else 6
@@ -63,20 +75,27 @@ def run_tenseal(root: Path, dataset: str) -> None:
         "mnist": MNISTCryptoNet_TS,
     }
     encrypted_model = wrappers[dataset](model)
+    setup_seconds = time.monotonic() - setup_started
     sample = torch.from_numpy(calibration[:1])
-    if dataset in {"digits", "mnist"}:
-        output, label = PredictConvEncVector(
-            encrypted_model, sample, context, model.conv1.kernel_size, model.conv1.stride[0]
-        )
-    else:
-        output, label = PredictEncVector(encrypted_model, sample, context)
+    durations = []
+    for _ in range(repeats):
+        started = time.monotonic()
+        if dataset in {"digits", "mnist"}:
+            output, label = PredictConvEncVector(
+                encrypted_model, sample, context, model.conv1.kernel_size, model.conv1.stride[0]
+            )
+        else:
+            output, label = PredictEncVector(encrypted_model, sample, context)
+        durations.append(time.monotonic() - started)
     print(f"decrypted_shape={tuple(output.shape)}, label={label.item()}")
+    return summarize(setup_seconds, durations)
 
 
-def run_concrete(root: Path, dataset: str) -> None:
+def run_concrete(root: Path, dataset: str, repeats: int) -> dict[str, object]:
     from concrete.ml.torch.compile import compile_torch_model
 
     model, calibration = torch_model(root, dataset)
+    setup_started = time.monotonic()
     compiled = compile_torch_model(
         model,
         calibration,
@@ -84,11 +103,19 @@ def run_concrete(root: Path, dataset: str) -> None:
         rounding_threshold_bits=8,
         p_error=0.01,
     )
-    output = compiled.forward(calibration[:1], fhe="execute")
+    setup_seconds = time.monotonic() - setup_started
+    # Exclude one-time key generation and runtime initialization from steady-state inference.
+    compiled.forward(calibration[:1], fhe="execute")
+    durations = []
+    for _ in range(repeats):
+        started = time.monotonic()
+        output = compiled.forward(calibration[:1], fhe="execute")
+        durations.append(time.monotonic() - started)
     print(f"decrypted_shape={output.shape}, label={int(np.argmax(output))}")
+    return summarize(setup_seconds, durations)
 
 
-def run_helayers(root: Path, dataset: str) -> None:
+def run_helayers(root: Path, dataset: str, repeats: int) -> dict[str, object]:
     import pyhelayers
     import tensorflow as tf
 
@@ -127,6 +154,7 @@ def run_helayers(root: Path, dataset: str) -> None:
             )
             files = [str(onnx_path)]
 
+        setup_started = time.monotonic()
         params = pyhelayers.PlainModelHyperParams()
         plain = pyhelayers.NeuralNetPlain()
         plain.init_from_files(params, files)
@@ -138,12 +166,18 @@ def run_helayers(root: Path, dataset: str) -> None:
         encrypted_model = pyhelayers.NeuralNet(context)
         encrypted_model.encode_encrypt(plain, profile)
         processor = encrypted_model.create_model_io_encoder()
-        encrypted_input = pyhelayers.EncryptedData(context)
-        processor.encode_encrypt(encrypted_input, [sample])
-        encrypted_output = pyhelayers.EncryptedData(context)
-        encrypted_model.predict(encrypted_output, encrypted_input)
-        output = processor.decrypt_decode_output(encrypted_output)
+        setup_seconds = time.monotonic() - setup_started
+        durations = []
+        for _ in range(repeats):
+            started = time.monotonic()
+            encrypted_input = pyhelayers.EncryptedData(context)
+            processor.encode_encrypt(encrypted_input, [sample])
+            encrypted_output = pyhelayers.EncryptedData(context)
+            encrypted_model.predict(encrypted_output, encrypted_input)
+            output = processor.decrypt_decode_output(encrypted_output)
+            durations.append(time.monotonic() - started)
         print(f"decrypted_shape={np.asarray(output).shape}, label={int(np.argmax(output))}")
+        return summarize(setup_seconds, durations)
 
 
 def main() -> None:
@@ -151,9 +185,14 @@ def main() -> None:
     parser.add_argument("backend", choices=("tenseal", "concrete", "helayers"))
     parser.add_argument("dataset", choices=("credit", "bank", "digits", "mnist"))
     parser.add_argument("--source-root", type=Path, required=True)
+    parser.add_argument("--repeats", type=int, default=1)
     args = parser.parse_args()
     started = time.monotonic()
-    globals()[f"run_{args.backend}"](args.source_root.resolve(), args.dataset)
+    result = globals()[f"run_{args.backend}"](
+        args.source_root.resolve(), args.dataset, args.repeats
+    )
+    result.update({"backend": args.backend, "dataset": args.dataset})
+    print("BENCHMARK_JSON=" + json.dumps(result, sort_keys=True))
     print(
         f"PASS backend={args.backend} dataset={args.dataset} "
         f"elapsed_seconds={time.monotonic() - started:.2f}"
