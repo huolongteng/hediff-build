@@ -34,6 +34,8 @@ def torch_model(root: Path, dataset: str):
 
 def run_tenseal(root: Path, dataset: str) -> None:
     import tenseal as ts
+
+    sys.path.insert(0, str(root))
     from base_ts import (
         BankMLP_TS,
         CreditMLP_TS,
@@ -135,9 +137,9 @@ def run_helayers(root: Path, dataset: str) -> None:
         context = pyhelayers.HeModel.create_context(profile)
         encrypted_model = pyhelayers.NeuralNet(context)
         encrypted_model.encode_encrypt(plain, profile)
-        processor = encrypted_model.create_io_processor()
+        processor = encrypted_model.create_model_io_encoder()
         encrypted_input = pyhelayers.EncryptedData(context)
-        processor.encode_encrypt_inputs_for_predict(encrypted_input, [sample])
+        processor.encode_encrypt(encrypted_input, [sample])
         encrypted_output = pyhelayers.EncryptedData(context)
         encrypted_model.predict(encrypted_output, encrypted_input)
         output = processor.decrypt_decode_output(encrypted_output)
