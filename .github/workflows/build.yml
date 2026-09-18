@@ -1,0 +1,88 @@
+name: Build HEDiff environments
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.backend }} / Python 3.10
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [tenseal, concrete, helayers]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Prepare build tooling
+        run: python -m pip install --upgrade pip wheel setuptools
+
+      - name: Resolve wheels, building only if required
+        id: resolve
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p wheelhouse reports
+          if python -m pip download \
+              --only-binary=:all: \
+              --dest wheelhouse \
+              -r requirements/${{ matrix.backend }}.txt \
+              2>&1 | tee reports/binary-resolution.log; then
+            echo "fallback=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Binary-only resolution failed; building the missing source distribution(s)."
+            rm -rf wheelhouse
+            mkdir wheelhouse
+            python -m pip wheel \
+              --wheel-dir wheelhouse \
+              -r requirements/${{ matrix.backend }}.txt \
+              2>&1 | tee reports/source-build.log
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install resolved wheelhouse
+        run: |
+          python -m pip install \
+            --no-index \
+            --find-links wheelhouse \
+            -r requirements/${{ matrix.backend }}.txt
+          python -m pip check | tee reports/pip-check.log
+
+      - name: Run native compatibility smoke test
+        env:
+          OMP_NUM_THREADS: "2"
+          MKL_NUM_THREADS: "2"
+          TF_NUM_INTRAOP_THREADS: "2"
+          TF_NUM_INTEROP_THREADS: "2"
+        run: python smoke.py ${{ matrix.backend }} 2>&1 | tee reports/smoke.log
+
+      - name: Record environment
+        if: always()
+        run: |
+          python -m pip freeze > reports/freeze.txt
+          sha256sum wheelhouse/* > reports/SHA256SUMS 2>/dev/null || true
+          df -h > reports/disk.txt
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.backend }}-reports
+          path: reports/
+          retention-days: 14
+
+      - name: Upload source-built wheels
+        if: steps.resolve.outputs.fallback == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.backend }}-source-built-wheelhouse
+          path: wheelhouse/
+          retention-days: 14
